@@ -21,16 +21,20 @@ fields = ['hostname', 'user account', 'time of use', 'device', 'serial']
 writer = csv.writer(c, dialect='excel')
 writer.writerow(fields)
 
+global cb
+cb = CbEnterpriseResponseAPI()
+
 
 def parse():
     '''
     Parses cmd line arguments for either one host, a list of hosts, or both
     '''
-    parser = argparse.ArgumentParser(description='Identifies usb activity from non-approved brands, the time of use, user account, and brand/product/serial of usb device')
-    parser.add_argument('-m', '--host', help='hostname of Carbon Black watchlist hit')
-    parser.add_argument('-l', '--list', help='list of hostnames')
+    parser = argparse.ArgumentParser(description='Identifies usb activity, the time of use, user account, and brand/product/serial of usb device')
+    parser.add_argument('-m', '--host', help='hostname to query for USB activity')
+    parser.add_argument('-l', '--list', help='file of list of hostnames, one per line, e.g. hosts.txt')
     parser.add_argument('-e', '--exclude', default="bydefaultwillnotexcludeanydevice", help='USB brand or serial to exclude, e.g. "samsung"')
     parser.add_argument('-i', '--include', default="*", help='USB brand or serial to query')
+    parser.add_argument('-r', '--results', type=int, default=1, help='number of results returned per host. default=1')
 
     args = parser.parse_args()
 
@@ -39,8 +43,10 @@ def parse():
 
     global include
     global exclude
+    global results
     exclude = args.exclude
     include = args.include
+    results = args.results
 
     global hosts
     hosts = []
@@ -54,15 +60,10 @@ def parse():
         hosts.append(host)
 
 
-def create_report(hostname):
+def create_record(hostname):
     '''
     Writes record of USB activity for provided hostname
     '''
-    global cb
-    global sensor
-
-    cb = CbEnterpriseResponseAPI()
-    sensor = cb.select(Sensor).where("hostname:" + hostname).first()
 
     user = find_user(hostname)
     usb = find_usb(hostname)
@@ -77,57 +78,73 @@ def find_usb(hostname):
     Finds process where regmods indicate USB activity     
     '''
     try:
-        proc = cb.select(Process).where("hostname:" + hostname).and_("regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*").and_("-regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*" + exclude + "*").and_("regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*" + include + "*").and_("-regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*snapshot*").first()
-        regmods = proc.regmods
-        url = proc.webui_link
-        usb_reg_mods = []
+        query = cb.select(Process)
+        query = query.where("hostname:" + hostname).and_(
+            "regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*").and_(
+            "-regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*" + exclude + "*").and_(
+            "regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*" + include + "*").and_(
+            "-regmod:registry\machine\system\currentcontrolset\control\deviceclasses\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\*snapshot*")
 
-        for r in regmods:
-            if "53f5630d-b6bf-11d0-94f2-00a0c91efb8b" in r.path:
-                event = r.timestamp, r.type, r.path
-                usb_reg_mods.append(event)
+        query = query[:results]
+        print "{0} processes found.".format(len(query))
+        user = find_user(hostname)
 
-        regmod_path = usb_reg_mods[0][2]
+        for proc in query:
 
-        # regex to extract vendor of usb
-        b = re.search('ven_(.*)&prod', regmod_path)
-        brand = b.group(1)
+            regmods = proc.regmods
+            url = proc.webui_link
+            usb_reg_mods = []
 
-        # regex to extract product name of usb
-        p = re.search('prod_(.*)&rev', regmod_path)
-        product = p.group(1)
+            for r in regmods:
+                if "53f5630d-b6bf-11d0-94f2-00a0c91efb8b" in r.path:
+                    event = r.timestamp, r.type, r.path
+                    usb_reg_mods.append(event)
 
-        # regex to extract uniq ID (serial #) of usb  *THIS REGEX NEEDS TO BE TUNED*
-        s = re.search('rev_(.*)#', regmod_path)
-        serial = s.group(1).split('#')[1]
+            regmod_path = usb_reg_mods[0][2]
 
-        access_date = usb_reg_mods[0][0].replace(microsecond=0).isoformat()
-        device = ("{0} {1}".format(brand, product)).lstrip()
+            # regex to extract vendor of usb
+            b = re.search('ven_(.*)&prod', regmod_path)
+            brand = b.group(1)
+
+            # regex to extract product name of usb
+            p = re.search('prod_(.*)&rev', regmod_path)
+            product = p.group(1)
+
+            # regex to extract uniq ID (serial #) of usb
+            s = re.search('rev_(.*)#', regmod_path)
+            serial = s.group(1).split('#')[1]
+
+            access_date = usb_reg_mods[0][0].replace(microsecond=0).isoformat()
+            device = ("{0} {1}".format(brand, product)).lstrip()
+
+            # compile and write record of activity details
+            record = access_date, hostname, user, device, serial, url
+            writer.writerow(record)
+            print record
 
     except AttributeError:
-        access_date = device = serial = url = 'Not Found'
-
-    usb_info = {'date': access_date, 'device': device, 'serial': serial, 'url': url}
-    return usb_info
+        print "Process not found."
 
 
 def find_user(hostname):
     '''
     Returns user account associated with most recent process on host 
     '''
+    user_proc = cb.select(Process).where("hostname:" + hostname).and_(
+        '-username:system AND -username:"network service" AND -username:"local service"').and_(
+        "filemod_count:[1 TO *]").first()
 
-    proc = cb.select(Process).where("hostname:" + hostname).and_('-username:system AND -username:"network service" AND -username:"local service"').and_("filemod_count:[1 TO *]").first()
-    user = {'hostname': proc.hostname, 'account': proc.username}
-    return user
+    return user_proc.username
 
 
 def main():
     parse()
     print "Checking {0} host(s)".format(len(hosts))
+    print "Limiting to {0} results per host".format(results)
     while len(hosts) != 0:
         for host in hosts:
             print "Processing %s" % host
-            create_report(host)
+            find_usb(host)
             hosts.remove(host)
     print "All hosts have been processed."
     c.close()
