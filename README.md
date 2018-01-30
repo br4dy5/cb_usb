@@ -13,13 +13,15 @@ optional arguments:
 
 -h,    --help   show this help message and exit
 
--m HOST,    --host    HOST    hostname of Carbon Black watchlist hit
+-m HOST,    --host    HOST    hostname to query for USB activity
 
--l LIST,    --list    LIST    list of hostnames
+-l LIST,    --list    LIST    file of list of hostnames, one per line, e.g. hosts.txt
 
 -e EXCLUDE,    --exclude    EXCLUDE    USB brand or serial to exclude, e.g. "samsung"
 
 -i INCLUDE,    --include    INCLUDE    USB brand or serial to query
+
+-r RESULTS,    --results RESULTS    number of results returned per host. default=1
 
 ### Example
 This example will search for the most recent USB activity on host 'Host123' which does not include 'sandisk' in the registry modification.
